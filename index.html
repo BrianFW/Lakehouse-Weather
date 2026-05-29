@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lakehouse Weather</title>
+
+<!-- ============================================================
+     FONTS  (stylesheet links are allowed; only <script> sources
+     are restricted in this environment)
+     - Fraunces:        large display numbers (the big readouts)
+     - Hanken Grotesk:  general UI text / labels
+     - JetBrains Mono:  small caps-style data labels & timestamps
+     ============================================================ -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- Chart.js drives all the graphs. Loaded from the allowed CDN. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+<style>
+/* ============================================================
+   DESIGN TOKENS
+   One place to retune the whole palette. Think of these like
+   named constants at the top of a program.
+   ============================================================ */
+:root{
+  --bg-0:#081a22;            /* deepest background (water at dusk)   */
+  --bg-1:#0e2a35;            /* mid background                       */
+  --ink:#eaf4f4;            /* primary text                         */
+  --ink-dim:#9fb6bc;        /* secondary / muted text               */
+  --line:rgba(255,255,255,.10); /* hairline borders                 */
+  --glass:rgba(255,255,255,.045); /* frosted card fill              */
+
+  /* One accent per metric. Used for numbers, lines, glows. */
+  --temp:#ffb066;           /* warm amber  -> temperature           */
+  --hum:#5fc9d8;            /* aqua        -> humidity              */
+  --rain:#93a6ef;           /* soft indigo -> rainfall              */
+
+  --shadow:0 18px 50px -20px rgba(0,0,0,.7);
+  --r:22px;                 /* standard corner radius               */
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+html,body{height:100%}
+
+body{
+  font-family:'Hanken Grotesk',sans-serif;
+  color:var(--ink);
+  /* Layered background: two radial "glows" over a vertical gradient,
+     giving an atmospheric dusk-over-the-lake feel rather than a flat fill. */
+  background:
+    radial-gradient(1100px 600px at 78% -8%, rgba(255,176,102,.10), transparent 60%),
+    radial-gradient(900px 700px at 8% 108%, rgba(95,201,216,.10), transparent 60%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  background-attachment:fixed;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+  padding:clamp(16px,3.5vw,40px);
+}
+
+/* Faint film-grain overlay for texture (pure CSS, no image file). */
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;opacity:.035;z-index:0;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.wrap{max-width:1080px;margin:0 auto;position:relative;z-index:1}
+
+/* ---- Masthead ------------------------------------------------ */
+header.masthead{
+  display:flex;align-items:flex-end;justify-content:space-between;
+  gap:16px;flex-wrap:wrap;margin-bottom:clamp(20px,3vw,36px);
+}
+.brand small{
+  font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.32em;
+  text-transform:uppercase;color:var(--ink-dim);
+}
+.brand h1{
+  font-family:'Fraunces',serif;font-weight:400;font-size:clamp(30px,6vw,52px);
+  line-height:1;letter-spacing:-.01em;margin-top:6px;
+}
+.brand h1 em{font-style:italic;color:var(--temp)}
+
+.meta{text-align:right;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ink-dim);line-height:1.7}
+.refresh{
+  cursor:pointer;border:1px solid var(--line);background:var(--glass);color:var(--ink-dim);
+  font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  padding:7px 12px;border-radius:999px;transition:.2s;margin-top:6px;
+}
+.refresh:hover{color:var(--ink);border-color:rgba(255,255,255,.3)}
+
+/* ============================================================
+   DASHBOARD (the default "current conditions" view)
+   ============================================================ */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(14px,2vw,22px)}
+@media(max-width:760px){.cards{grid-template-columns:1fr}}
+
+.card{
+  position:relative;border:1px solid var(--line);border-radius:var(--r);
+  background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  padding:clamp(20px,2.5vw,30px);box-shadow:var(--shadow);overflow:hidden;
+  cursor:pointer;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .25s;
+}
+.card:hover{transform:translateY(-5px);border-color:rgba(255,255,255,.22)}
+.card:active{transform:translateY(-1px)}
+/* A soft colored glow bleeding up from the bottom of each card,
+   tinted to that card's metric color via the --accent variable. */
+.card::after{
+  content:"";position:absolute;left:0;right:0;bottom:-40%;height:80%;
+  background:radial-gradient(60% 100% at 50% 100%, var(--accent), transparent 70%);
+  opacity:.16;pointer-events:none;
+}
+.card .label{
+  font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--ink-dim);display:flex;align-items:center;gap:8px;
+}
+.card .label .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+
+.card .big{
+  font-family:'Fraunces',serif;font-weight:300;line-height:.95;
+  font-size:clamp(56px,9vw,84px);margin:16px 0 4px;letter-spacing:-.02em;
+}
+.card .big .unit{font-size:.34em;color:var(--ink-dim);font-weight:400;margin-left:4px}
+
+.card .sub{display:flex;gap:18px;margin-top:14px;flex-wrap:wrap}
+.card .sub div{font-size:13px;color:var(--ink-dim)}
+.card .sub b{display:block;color:var(--ink);font-size:17px;font-weight:600;margin-top:2px;font-family:'Hanken Grotesk'}
+
+.tap-hint{
+  margin-top:18px;font-family:'JetBrains Mono',monospace;font-size:10.5px;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim);opacity:.7;
+  display:flex;align-items:center;gap:6px;
+}
+.tap-hint svg{width:13px;height:13px}
+
+/* ============================================================
+   DETAIL VIEW (graphs)
+   ============================================================ */
+.detail{display:none}            /* toggled on by JS */
+.detail.show{display:block;animation:fade .4s ease both}
+
+/* Compact strip of current values across the top of the detail view. */
+.readouts{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.readout{
+  flex:1 1 160px;border:1px solid var(--line);border-radius:16px;background:var(--glass);
+  backdrop-filter:blur(10px);padding:14px 16px;transition:.2s;
+}
+.readout.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.readout .label{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim)}
+.readout .val{font-family:'Fraunces',serif;font-weight:300;font-size:30px;margin-top:4px;line-height:1}
+.readout .val .unit{font-size:.45em;color:var(--ink-dim);margin-left:2px}
+
+/* Control bar: metric tabs (left) + source toggle (right) */
+.controls{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px}
+.segrp{display:flex;gap:6px;background:var(--glass);border:1px solid var(--line);border-radius:999px;padding:5px}
+.seg{
+  border:none;background:transparent;color:var(--ink-dim);cursor:pointer;
+  font-family:'Hanken Grotesk';font-weight:600;font-size:13px;
+  padding:8px 16px;border-radius:999px;transition:.2s;white-space:nowrap;
+}
+.seg.on{background:var(--ink);color:var(--bg-0)}
+.seg:not(.on):hover{color:var(--ink)}
+
+.back{
+  display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+  border:1px solid var(--line);background:var(--glass);color:var(--ink);
+  font-family:'Hanken Grotesk';font-weight:600;font-size:13px;
+  padding:9px 16px;border-radius:999px;transition:.2s;margin-bottom:18px;
+}
+.back:hover{border-color:rgba(255,255,255,.3);transform:translateX(-3px)}
+.back svg{width:15px;height:15px}
+
+.chart-panel{
+  border:1px solid var(--line);border-radius:var(--r);background:var(--glass);
+  backdrop-filter:blur(14px);padding:clamp(16px,2.5vw,28px);box-shadow:var(--shadow);
+}
+.chart-title{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;flex-wrap:wrap;gap:8px}
+.chart-title h2{font-family:'Fraunces',serif;font-weight:400;font-size:clamp(20px,3vw,28px)}
+.chart-title span{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink-dim);letter-spacing:.1em}
+.canvas-box{position:relative;height:min(58vh,460px);margin-top:14px}
+
+/* ---- status / error messaging ---- */
+.status{
+  border:1px dashed var(--line);border-radius:var(--r);padding:28px;text-align:center;
+  color:var(--ink-dim);background:var(--glass);font-size:14px;line-height:1.6;
+}
+.status b{color:var(--ink)}
+.status code{font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px;color:var(--ink)}
+
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+/* Staggered entrance for the three dashboard cards on first paint. */
+.cards .card{animation:fade .5s ease both}
+.cards .card:nth-child(1){animation-delay:.05s}
+.cards .card:nth-child(2){animation-delay:.13s}
+.cards .card:nth-child(3){animation-delay:.21s}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="brand">
+      <small>Live Conditions</small>
+      <h1>Lakehouse <em>Weather</em></h1>
+    </div>
+    <div class="meta">
+      <div id="asof">loading…</div>
+      <button class="refresh" id="refreshBtn">↻ Refresh</button>
+    </div>
+  </header>
+
+  <!-- ===== DASHBOARD VIEW ===== -->
+  <main id="dashboard">
+    <div id="dashCards" class="cards"><!-- cards injected by JS --></div>
+  </main>
+
+  <!-- ===== DETAIL / GRAPH VIEW ===== -->
+  <section id="detail" class="detail">
+    <button class="back" id="backBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>
+      Back to dashboard
+    </button>
+
+    <!-- current-value strip -->
+    <div class="readouts" id="readouts"></div>
+
+    <!-- metric tabs + source toggle -->
+    <div class="controls">
+      <div class="segrp" id="metricTabs">
+        <button class="seg" data-metric="temp">Temperature</button>
+        <button class="seg" data-metric="humidity">Humidity</button>
+        <button class="seg" data-metric="rain">Rainfall</button>
+      </div>
+      <div class="segrp" id="sourceTabs">
+        <button class="seg" data-source="live">Today · live</button>
+        <button class="seg" data-source="history">History</button>
+      </div>
+    </div>
+
+    <div class="chart-panel">
+      <div class="chart-title">
+        <h2 id="chartHeading">—</h2>
+        <span id="chartSub"></span>
+      </div>
+      <div class="canvas-box"><canvas id="chart"></canvas></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+/* ================================================================
+   LAKEHOUSE WEATHER  —  client-side dashboard
+
+   HIGH-LEVEL FLOW
+   1. CONFIG          : the sheet ID + tab names + which header maps
+                        to which logical field. Edit here if you ever
+                        rename a column.
+   2. fetchTab()      : pulls one tab from Google's "gviz" endpoint,
+                        which works on any "anyone with the link can
+                        view" sheet without an API key.
+   3. parseGviz()     : turns Google's reply into plain rows we can use.
+   4. render*()       : draw the dashboard, then the detail/graph view.
+   It's a small state machine: STATE holds the cached tab data plus
+   "which metric / which source am I currently looking at", and the
+   render functions read STATE to decide what to paint.
+   ================================================================ */
+
+/* ---------- 1. CONFIG ---------------------------------------- */
+const CONFIG = {
+  sheetId: "1bEENptQf3My1asPoR9SJzmIxUlxV8FPfTFYZq__Xi-w",
+
+  // Tab (sheet) names exactly as they appear in your workbook.
+  tabs: {
+    dashboard: "Dashboard",
+    live:      "Lakehouse Weather",
+    history:   "Weather History"
+  },
+
+  /* Map each logical field to the COLUMN HEADER text in that tab.
+     We look columns up by name (not position), so the dashboard keeps
+     working even if you reorder columns. Matching ignores case/spaces. */
+  cols: {
+    dashboard:{ date:"Date", maxTemp:"Max Temp", minTemp:"Min Temp",
+                maxHum:"Max Humidity", minHum:"Min Humidity", rain:"Rainfall",
+                curTemp:"Current Temp", curHum:"Current Hum", rainYest:"Rain Yesterday" },
+    live:     { time:"Timestamp", temp:"Tempf", humidity:"Humidity", rain:"Rain Today" },
+    history:  { date:"Date", maxTemp:"Max Temp", minTemp:"Min Temp",
+                maxHum:"Max Humidity", minHum:"Min Humidity", rain:"Rainfall" }
+  },
+
+  // Accent colors per metric (must match the CSS variable values).
+  color:{ temp:"#ffb066", hum:"#5fc9d8", rain:"#93a6ef" },
+
+  // Performance guard: only plot the most recent N rows of the live log
+  // so a huge sheet doesn't bog the chart down.
+  liveMaxPoints: 500
+};
+
+/* ---------- 2 & 3. DATA LAYER ------------------------------- */
+
+/* Build the gviz URL for a tab. tqx=out:json asks for JSON;
+   headers=1 tells Google the first row is a header row. */
+function gvizUrl(tabName){
+  const base = `https://docs.google.com/spreadsheets/d/${CONFIG.sheetId}/gviz/tq`;
+  const q = `tqx=out:json&headers=1&sheet=${encodeURIComponent(tabName)}`;
+  return `${base}?${q}`;
+}
+
+/* Google wraps its JSON in some junk, e.g.
+       /*O_o*​/ google.visualization.Query.setResponse({ ...real json... });
+   so we slice out the part between the first '{' and the last '}'. */
+function parseGviz(text){
+  const json = JSON.parse(text.substring(text.indexOf("{"), text.lastIndexOf("}") + 1));
+  const cols = json.table.cols.map(c => (c.label || "").trim());   // header names
+  const rows = json.table.rows.map(r => r.c);                      // array of cell objects
+  return { cols, rows };
+}
+
+/* Fetch + parse one tab. Returns {cols, rows} or throws on failure. */
+async function fetchTab(tabName){
+  const res = await fetch(gvizUrl(tabName));
+  if(!res.ok) throw new Error(`HTTP ${res.status} for "${tabName}"`);
+  return parseGviz(await res.text());
+}
+
+/* --- cell helpers ---
+   Each gviz cell looks like { v: <raw value>, f: "<formatted text>" }.
+   A cell can also be null (empty). These helpers normalize that. */
+
+// Find a column's index by header name (case/space-insensitive).
+function colIdx(cols, name){
+  const norm = s => s.toLowerCase().replace(/\s+/g," ").trim();
+  return cols.findIndex(c => norm(c) === norm(name));
+}
+
+// Numeric value of a cell, stripping units like "°F", "%", spaces.
+function num(cell){
+  if(!cell || cell.v == null) return NaN;
+  if(typeof cell.v === "number") return cell.v;
+  const s = String(cell.f != null ? cell.f : cell.v).replace(/[^0-9.\-]/g,"");
+  return parseFloat(s);
+}
+
+// Best human-readable text for a cell (prefers Google's formatted form).
+function text(cell){
+  if(!cell || cell.v == null) return "";
+  return String(cell.f != null ? cell.f : cell.v);
+}
+
+// Turn a gviz date cell into a JS Date. Google sends dates as the
+// string "Date(2026,4,28,18,14,36)" where the month is 0-based.
+function dateOf(cell){
+  if(!cell || cell.v == null) return null;
+  const m = String(cell.v).match(/Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)/);
+  if(m){
+    return new Date(+m[1], +m[2], +m[3], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+  }
+  const d = new Date(text(cell));               // fallback: try to parse the text
+  return isNaN(d) ? null : d;
+}
+
+const shortDate = d => d ? `${d.getMonth()+1}/${d.getDate()}` : "";
+
+/* ---------- STATE ------------------------------------------- */
+const STATE = {
+  data:{ dashboard:null, live:null, history:null }, // cached tab data
+  metric:"temp",      // 'temp' | 'humidity' | 'rain'
+  source:"live",      // 'live' | 'history'
+  chart:null          // the live Chart.js instance
+};
+
+/* Pull the "current conditions" out of the Dashboard tab.
+   We use the LAST row, so this works whether the tab holds a single
+   summary row or a running log (last row = most recent). */
+function currentConditions(){
+  const t = STATE.data.dashboard;
+  if(!t || !t.rows.length) return null;
+  const c = CONFIG.cols.dashboard;
+  const row = t.rows[t.rows.length - 1];
+  const get = name => row[colIdx(t.cols, name)];
+  return {
+    date:    text(get(c.date)),
+    curTemp: num(get(c.curTemp)),
+    maxTemp: num(get(c.maxTemp)),
+    minTemp: num(get(c.minTemp)),
+    curHum:  num(get(c.curHum)),
+    maxHum:  num(get(c.maxHum)),
+    minHum:  num(get(c.minHum)),
+    rain:    num(get(c.rain)),
+    rainYest:num(get(c.rainYest))
+  };
+}
+
+/* ---------- 4a. RENDER: DASHBOARD --------------------------- */
+function renderDashboard(){
+  const cc = currentConditions();
+  const box = document.getElementById("dashCards");
+
+  if(!cc){
+    box.innerHTML = `<div class="status">Couldn't read the Dashboard tab.</div>`;
+    return;
+  }
+
+  document.getElementById("asof").textContent = cc.date ? `as of ${cc.date}` : "";
+
+  const f1 = v => isNaN(v) ? "–" : v.toFixed(1);   // 1 decimal
+  const f3 = v => isNaN(v) ? "–" : v.toFixed(3);   // rainfall
+
+  // small "tap to explore" hand icon
+  const hint = `<div class="tap-hint">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M9 11V6a2 2 0 1 1 4 0v5"/><path d="M13 7a2 2 0 1 1 4 0v4"/>
+        <path d="M17 9a2 2 0 1 1 4 0v5a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7L5 14"/></svg>
+      Tap to graph</div>`;
+
+  box.innerHTML = `
+    <!-- TEMPERATURE -->
+    <div class="card" data-go="temp" style="--accent:var(--temp)">
+      <div class="label"><span class="dot"></span>Temperature</div>
+      <div class="big" style="color:var(--temp)">${f1(cc.curTemp)}<span class="unit">°F</span></div>
+      <div class="sub">
+        <div>High<b>${f1(cc.maxTemp)}°</b></div>
+        <div>Low<b>${f1(cc.minTemp)}°</b></div>
+      </div>
+      ${hint}
+    </div>
+
+    <!-- HUMIDITY -->
+    <div class="card" data-go="humidity" style="--accent:var(--hum)">
+      <div class="label"><span class="dot"></span>Humidity</div>
+      <div class="big" style="color:var(--hum)">${f1(cc.curHum)}<span class="unit">%</span></div>
+      <div class="sub">
+        <div>High<b>${f1(cc.maxHum)}%</b></div>
+        <div>Low<b>${f1(cc.minHum)}%</b></div>
+      </div>
+      ${hint}
+    </div>
+
+    <!-- RAINFALL -->
+    <div class="card" data-go="rain" style="--accent:var(--rain)">
+      <div class="label"><span class="dot"></span>Rainfall</div>
+      <div class="big" style="color:var(--rain)">${f3(cc.rain)}<span class="unit">in</span></div>
+      <div class="sub">
+        <div>Today<b>${f3(cc.rain)} in</b></div>
+        <div>Yesterday<b>${f3(cc.rainYest)} in</b></div>
+      </div>
+      ${hint}
+    </div>`;
+
+  // Wire each card so a tap opens that metric's graph.
+  box.querySelectorAll(".card").forEach(card =>
+    card.addEventListener("click", () => openDetail(card.dataset.go))
+  );
+}
+
+/* ---------- 4b. RENDER: DETAIL TOP STRIP -------------------- */
+function renderReadouts(){
+  const cc = currentConditions() || {};
+  const f1 = v => isNaN(v) ? "–" : v.toFixed(1);
+  const f3 = v => isNaN(v) ? "–" : v.toFixed(3);
+  const r = document.getElementById("readouts");
+
+  // Each readout is highlighted when it matches the metric on screen.
+  const item = (m, label, val, unit, color) => `
+    <div class="readout ${STATE.metric===m?"active":""}" style="--accent:${color}">
+      <div class="label">${label}</div>
+      <div class="val" style="color:${color}">${val}<span class="unit">${unit}</span></div>
+    </div>`;
+
+  r.innerHTML =
+    item("temp","Temperature", f1(cc.curTemp),"°F", CONFIG.color.temp) +
+    item("humidity","Humidity", f1(cc.curHum),"%",  CONFIG.color.hum) +
+    item("rain","Rainfall",     f3(cc.rain),"in",   CONFIG.color.rain);
+}
+
+/* ---------- 4c. RENDER: CHART ------------------------------- */
+
+/* Assemble the {labels, datasets, heading} for the current metric+source.
+   This is where the requirement logic lives:
+     LIVE     -> Lakehouse Weather tab, value vs Timestamp
+     HISTORY  -> Weather History tab, MAX & MIN vs Date
+                 (rainfall has only one column, so a single series) */
+function buildChartData(){
+  const m = STATE.metric, src = STATE.source;
+  const accent = m==="temp"?CONFIG.color.temp : m==="humidity"?CONFIG.color.hum : CONFIG.color.rain;
+  const metricName = m==="temp"?"Temperature" : m==="humidity"?"Humidity" : "Rainfall";
+  const unit = m==="temp"?"°F" : m==="humidity"?"%" : "in";
+
+  // ---- LIVE: value plotted against time-of-day ----
+  if(src==="live"){
+    const t = STATE.data.live;
+    if(!t) return {error:"Live data unavailable."};
+    const c = CONFIG.cols.live;
+    const iTime = colIdx(t.cols, c.time);
+    const iVal  = colIdx(t.cols, m==="temp"?c.temp : m==="humidity"?c.humidity : c.rain);
+
+    // Keep only the most recent N rows for responsiveness.
+    const rows = t.rows.slice(-CONFIG.liveMaxPoints);
+    const labels = rows.map(row => text(row[iTime]));
+    const vals   = rows.map(row => num(row[iVal]));
+
+    return {
+      heading:`${metricName} · today`,
+      sub:`${vals.length} readings · live log vs time`,
+      labels,
+      datasets:[ lineSet(metricName+" ("+unit+")", vals, accent) ]
+    };
+  }
+
+  // ---- HISTORY: max & min plotted against date ----
+  const t = STATE.data.history;
+  if(!t) return {error:"History data unavailable."};
+  const c = CONFIG.cols.history;
+  const iDate = colIdx(t.cols, c.date);
+  const labels = t.rows.map(row => shortDate(dateOf(row[iDate])));
+
+  if(m==="rain"){
+    // Rainfall history has a single Rainfall column (no max/min).
+    const iR = colIdx(t.cols, c.rain);
+    const vals = t.rows.map(row => num(row[iR]));
+    return {
+      heading:"Rainfall · history",
+      sub:`${vals.length} days · daily total vs date`,
+      labels,
+      datasets:[ barSet("Rainfall (in)", vals, accent) ]
+    };
+  }
+
+  // Temperature / Humidity history: two lines (max + min).
+  const maxName = m==="temp"?c.maxTemp:c.maxHum;
+  const minName = m==="temp"?c.minTemp:c.minHum;
+  const maxVals = t.rows.map(row => num(row[colIdx(t.cols, maxName)]));
+  const minVals = t.rows.map(row => num(row[colIdx(t.cols, minName)]));
+  return {
+    heading:`${metricName} · history`,
+    sub:`${labels.length} days · max & min vs date`,
+    labels,
+    datasets:[
+      lineSet(`Max (${unit})`, maxVals, accent),
+      lineSet(`Min (${unit})`, minVals, shade(accent,-0.45))   // dimmer shade for the min line
+    ]
+  };
+}
+
+/* Chart.js dataset factories — keeps styling consistent. */
+function lineSet(label, data, color){
+  return {
+    label, data,
+    borderColor:color,
+    backgroundColor:hexA(color,.12),
+    fill:true, tension:.35,
+    borderWidth:2, pointRadius:0, pointHoverRadius:5,
+    pointHoverBackgroundColor:color, pointHoverBorderColor:"#fff"
+  };
+}
+function barSet(label, data, color){
+  return { label, data, backgroundColor:hexA(color,.55), borderColor:color, borderWidth:1, borderRadius:5 };
+}
+
+/* color helpers: hexA() adds alpha; shade() lightens/darkens a hex. */
+function hexA(hex,a){
+  const n=parseInt(hex.slice(1),16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+function shade(hex,amt){ // amt in [-1,1]; negative = darker
+  let n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  const adj=v=> Math.max(0,Math.min(255, Math.round(v + 255*amt)));
+  r=adj(r);g=adj(g);b=adj(b);
+  return `#${((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1)}`;
+}
+
+/* Paint (or repaint) the chart from STATE. */
+function drawChart(){
+  const cfg = buildChartData();
+  const heading = document.getElementById("chartHeading");
+  const subEl   = document.getElementById("chartSub");
+  const canvas  = document.getElementById("chart");
+
+  if(cfg.error){
+    heading.textContent = "No data";
+    subEl.textContent = "";
+    if(STATE.chart){ STATE.chart.destroy(); STATE.chart=null; }
+    return;
+  }
+
+  heading.textContent = cfg.heading;
+  subEl.textContent   = cfg.sub;
+
+  const isBar = cfg.datasets[0].borderRadius !== undefined;
+
+  // Destroy the previous chart before drawing a new one (avoids overlap).
+  if(STATE.chart) STATE.chart.destroy();
+
+  STATE.chart = new Chart(canvas, {
+    type: isBar ? "bar" : "line",
+    data:{ labels:cfg.labels, datasets:cfg.datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{ mode:"index", intersect:false },
+      plugins:{
+        legend:{ display:cfg.datasets.length>1,
+                 labels:{ color:"#cfe0e2", font:{family:"Hanken Grotesk",size:12}, usePointStyle:true, boxWidth:8 } },
+        tooltip:{ backgroundColor:"#0b2530", borderColor:"rgba(255,255,255,.15)", borderWidth:1,
+                  titleColor:"#fff", bodyColor:"#cfe0e2", padding:10,
+                  titleFont:{family:"JetBrains Mono",size:11} }
+      },
+      scales:{
+        x:{ grid:{ color:"rgba(255,255,255,.05)" },
+            ticks:{ color:"#7e979d", font:{family:"JetBrains Mono",size:10}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
+        y:{ grid:{ color:"rgba(255,255,255,.06)" },
+            ticks:{ color:"#7e979d", font:{family:"JetBrains Mono",size:10} } }
+      }
+    }
+  });
+}
+
+/* ---------- VIEW SWITCHING --------------------------------- */
+function openDetail(metric){
+  STATE.metric = metric;
+  STATE.source = "live";           // always start on the live view
+  document.getElementById("dashboard").style.display = "none";
+  document.getElementById("detail").classList.add("show");
+  syncControls();
+  renderReadouts();
+  drawChart();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+function backToDashboard(){
+  document.getElementById("detail").classList.remove("show");
+  document.getElementById("dashboard").style.display = "block";
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+// Highlight the active metric tab and source toggle.
+function syncControls(){
+  document.querySelectorAll("#metricTabs .seg").forEach(b =>
+    b.classList.toggle("on", b.dataset.metric===STATE.metric));
+  document.querySelectorAll("#sourceTabs .seg").forEach(b =>
+    b.classList.toggle("on", b.dataset.source===STATE.source));
+}
+
+/* ---------- EVENT WIRING ----------------------------------- */
+document.getElementById("backBtn").addEventListener("click", backToDashboard);
+
+document.querySelectorAll("#metricTabs .seg").forEach(btn =>
+  btn.addEventListener("click", ()=>{
+    STATE.metric = btn.dataset.metric;
+    syncControls(); renderReadouts(); drawChart();
+  }));
+
+document.querySelectorAll("#sourceTabs .seg").forEach(btn =>
+  btn.addEventListener("click", ()=>{
+    STATE.source = btn.dataset.source;
+    syncControls(); drawChart();
+  }));
+
+document.getElementById("refreshBtn").addEventListener("click", loadAll);
+
+/* ---------- BOOTSTRAP -------------------------------------- */
+async function loadAll(){
+  const asof = document.getElementById("asof");
+  asof.textContent = "loading…";
+  try{
+    // Fetch all three tabs in parallel.
+    const [dash, live, hist] = await Promise.all([
+      fetchTab(CONFIG.tabs.dashboard),
+      fetchTab(CONFIG.tabs.live),
+      fetchTab(CONFIG.tabs.history)
+    ]);
+    STATE.data = { dashboard:dash, live:live, history:hist };
+    renderDashboard();
+    // If we're already inside the detail view (e.g. user hit refresh there),
+    // repaint it too.
+    if(document.getElementById("detail").classList.contains("show")){
+      renderReadouts(); drawChart();
+    }
+  }catch(err){
+    console.error(err);
+    document.getElementById("dashCards").innerHTML = `
+      <div class="status" style="grid-column:1/-1">
+        <b>Couldn't load the sheet.</b><br><br>
+        Make sure the workbook is shared as <b>Anyone with the link → Viewer</b>
+        (Share button, top-right of Google Sheets), and that the tab names match:
+        <code>Dashboard</code>, <code>Lakehouse Weather</code>, <code>Weather History</code>.<br><br>
+        <span style="opacity:.7">Technical detail: ${err.message}</span>
+      </div>`;
+    asof.textContent = "";
+  }
+}
+
+loadAll();   // go
+</script>
+</body>
+</html>
