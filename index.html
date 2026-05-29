@@ -340,6 +340,13 @@ function colIdx(cols, name){
 // Numeric value of a cell, stripping units like "°F", "%", spaces.
 function num(cell){
   if(!cell || cell.v == null) return NaN;
+  // Percent-formatted cells are a special case: Google keeps the RAW
+  // FRACTION in v (e.g. 0.4214) but shows "42.14%" in the formatted text f.
+  // We want the number the user actually sees, so when f contains a '%'
+  // we read it from f instead of from v.
+  if(cell.f != null && cell.f.indexOf("%") !== -1){
+    return parseFloat(String(cell.f).replace(/[^0-9.\-]/g,""));
+  }
   if(typeof cell.v === "number") return cell.v;
   const s = String(cell.f != null ? cell.f : cell.v).replace(/[^0-9.\-]/g,"");
   return parseFloat(s);
@@ -382,14 +389,25 @@ function currentConditions(){
   const c = CONFIG.cols.dashboard;
   const row = t.rows[t.rows.length - 1];
   const get = name => row[colIdx(t.cols, name)];
+
+  // Humidity normalizer: cells in this tab are inconsistently formatted —
+  // some store a percent (e.g. 42.14) and some store the raw fraction
+  // (0.4214). Real relative humidity is never <= 1%, so if a value comes
+  // through as a fraction we scale it up by 100. (Applied to humidity only;
+  // temperature can legitimately be below 1°F, so it must NOT be scaled.)
+  const hum = name => {
+    const v = num(get(name));
+    return (!isNaN(v) && v > 0 && v <= 1) ? v * 100 : v;
+  };
+
   return {
     date:    text(get(c.date)),
     curTemp: num(get(c.curTemp)),
     maxTemp: num(get(c.maxTemp)),
     minTemp: num(get(c.minTemp)),
-    curHum:  num(get(c.curHum)),
-    maxHum:  num(get(c.maxHum)),
-    minHum:  num(get(c.minHum)),
+    curHum:  hum(c.curHum),
+    maxHum:  hum(c.maxHum),
+    minHum:  hum(c.minHum),
     rain:    num(get(c.rain)),
     rainYest:num(get(c.rainYest))
   };
