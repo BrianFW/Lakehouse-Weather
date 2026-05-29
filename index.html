@@ -631,6 +631,10 @@ function drawChart(){
         x:{ grid:{ color:"rgba(255,255,255,.05)" },
             ticks:{ color:"#7e979d", font:{family:"JetBrains Mono",size:10}, maxRotation:0, autoSkip:true, maxTicksLimit:8 } },
         y:{ grid:{ color:"rgba(255,255,255,.06)" },
+            // Rainfall can't be negative, so pin its axis floor at 0.
+            // Temperature/humidity keep auto-scaling so detail isn't lost.
+            beginAtZero: STATE.metric==="rain",
+            min: STATE.metric==="rain" ? 0 : undefined,
             ticks:{ color:"#7e979d", font:{family:"JetBrains Mono",size:10} } }
       }
     }
