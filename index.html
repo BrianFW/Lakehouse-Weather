@@ -372,6 +372,22 @@ function dateOf(cell){
 
 const shortDate = d => d ? `${d.getMonth()+1}/${d.getDate()}` : "";
 
+// Turn the live tab's Timestamp cell into a sortable number (seconds since
+// midnight). Used to order the live log chronologically so the newest
+// reading ends up on the right of the chart. Handles either a real
+// date/time cell or a plain "6:14:36 PM" style string.
+function timeKey(cell){
+  const d = dateOf(cell);                       // real date/time? use its clock value
+  if(d) return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
+  const m = text(cell).trim().match(/(\d+):(\d+)(?::(\d+))?\s*(AM|PM)?/i);
+  if(!m) return 0;
+  let h = +m[1];
+  const min = +m[2], sec = +(m[3] || 0), ap = (m[4] || "").toUpperCase();
+  if(ap === "PM" && h < 12) h += 12;            // 1–11 PM -> 13–23
+  if(ap === "AM" && h === 12) h = 0;            // 12 AM  -> 0
+  return h*3600 + min*60 + sec;
+}
+
 /* ---------- STATE ------------------------------------------- */
 const STATE = {
   data:{ dashboard:null, live:null, history:null }, // cached tab data
@@ -516,10 +532,17 @@ function buildChartData(){
     const iTime = colIdx(t.cols, c.time);
     const iVal  = colIdx(t.cols, m==="temp"?c.temp : m==="humidity"?c.humidity : c.rain);
 
-    // Keep only the most recent N rows for responsiveness.
-    const rows = t.rows.slice(-CONFIG.liveMaxPoints);
-    const labels = rows.map(row => text(row[iTime]));
-    const vals   = rows.map(row => num(row[iVal]));
+    // Build {label,val,key} triples, sort oldest->newest by time so the
+    // latest reading lands on the right, THEN keep the most recent N points.
+    let pts = t.rows.map(row => ({
+      label: text(row[iTime]),
+      val:   num(row[iVal]),
+      key:   timeKey(row[iTime])
+    }));
+    pts.sort((a, b) => a.key - b.key);          // chronological, left = oldest
+    pts = pts.slice(-CONFIG.liveMaxPoints);     // most recent N
+    const labels = pts.map(p => p.label);
+    const vals   = pts.map(p => p.val);
 
     return {
       heading:`${metricName} · today`,
@@ -534,12 +557,19 @@ function buildChartData(){
   if(!t) return {error:"History data unavailable."};
   const c = CONFIG.cols.history;
   const iDate = colIdx(t.cols, c.date);
-  const labels = t.rows.map(row => shortDate(dateOf(row[iDate])));
+
+  // Sort the day-rows oldest->newest ONCE up front, so every series below
+  // (max, min, rainfall) shares the same left-to-right order with the
+  // latest date on the right. We attach the parsed Date as a sort key.
+  const rows = t.rows
+    .map(row => ({ row, d: dateOf(row[iDate]) }))
+    .sort((a, b) => (a.d ? a.d.getTime() : 0) - (b.d ? b.d.getTime() : 0));
+  const labels = rows.map(r => shortDate(r.d));
 
   if(m==="rain"){
     // Rainfall history has a single Rainfall column (no max/min).
     const iR = colIdx(t.cols, c.rain);
-    const vals = t.rows.map(row => num(row[iR]));
+    const vals = rows.map(r => num(r.row[iR]));
     return {
       heading:"Rainfall · history",
       sub:`${vals.length} days · daily total vs date`,
@@ -551,8 +581,10 @@ function buildChartData(){
   // Temperature / Humidity history: two lines (max + min).
   const maxName = m==="temp"?c.maxTemp:c.maxHum;
   const minName = m==="temp"?c.minTemp:c.minHum;
-  const maxVals = t.rows.map(row => num(row[colIdx(t.cols, maxName)]));
-  const minVals = t.rows.map(row => num(row[colIdx(t.cols, minName)]));
+  const iMax = colIdx(t.cols, maxName);
+  const iMin = colIdx(t.cols, minName);
+  const maxVals = rows.map(r => num(r.row[iMax]));
+  const minVals = rows.map(r => num(r.row[iMin]));
   return {
     heading:`${metricName} · history`,
     sub:`${labels.length} days · max & min vs date`,
