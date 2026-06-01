@@ -6,6 +6,25 @@
 <title>Lakehouse Weather</title>
 
 <!-- ============================================================
+     PWA / HOME-SCREEN SETUP  (manifest-only approach)
+     - manifest.json drives the install name, colors, and icons
+       (used by Android / desktop Chrome).
+     - iOS/Safari IGNORES the manifest icon, so the apple-touch-icon
+       link + apple-* meta tags below are what make it look right when
+       you do Share -> Add to Home Screen on an iPhone/iPad.
+     All these files (manifest.json, the icons) must sit in the SAME
+     folder as this page in your GitHub repo (the repo root).
+     ============================================================ -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0e2a35">
+
+<!-- iOS home-screen behavior -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lakehouse">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+<!-- ============================================================
      FONTS  (stylesheet links are allowed; only <script> sources
      are restricted in this environment)
      - Fraunces:        large display numbers (the big readouts)
