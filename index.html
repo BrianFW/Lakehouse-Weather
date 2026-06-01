@@ -37,6 +37,7 @@
   --temp:#ffb066;           /* warm amber  -> temperature           */
   --hum:#5fc9d8;            /* aqua        -> humidity              */
   --rain:#93a6ef;           /* soft indigo -> rainfall              */
+  --level:#7fe0b0;          /* soft green  -> lake level            */
 
   --shadow:0 18px 50px -20px rgba(0,0,0,.7);
   --r:22px;                 /* standard corner radius               */
@@ -95,8 +96,11 @@ header.masthead{
 /* ============================================================
    DASHBOARD (the default "current conditions" view)
    ============================================================ */
-.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(14px,2vw,22px)}
-@media(max-width:760px){.cards{grid-template-columns:1fr}}
+/* Four metric cards. Auto-fit wraps them: 4-across on wide screens,
+   2-across on tablets, 1 column on phones. */
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(14px,2vw,22px)}
+@media(max-width:1000px){.cards{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.cards{grid-template-columns:1fr}}
 
 .card{
   position:relative;border:1px solid var(--line);border-radius:var(--r);
@@ -198,6 +202,7 @@ header.masthead{
 .cards .card:nth-child(1){animation-delay:.05s}
 .cards .card:nth-child(2){animation-delay:.13s}
 .cards .card:nth-child(3){animation-delay:.21s}
+.cards .card:nth-child(4){animation-delay:.29s}
 </style>
 </head>
 <body>
@@ -286,13 +291,18 @@ const CONFIG = {
     dashboard:{ date:"Date", maxTemp:"Max Temp", minTemp:"Min Temp",
                 maxHum:"Max Humidity", minHum:"Min Humidity", rain:"Rainfall",
                 curTemp:"Current Temp", curHum:"Current Hum", rainYest:"Rain Yesterday" },
-    live:     { time:"Timestamp", temp:"Tempf", humidity:"Humidity", rain:"Rain Today" },
+    live:     { time:"Timestamp", temp:"Tempf", humidity:"Humidity", rain:"Rain Today",
+                level:"Lake Level" },
     history:  { date:"Date", maxTemp:"Max Temp", minTemp:"Min Temp",
-                maxHum:"Max Humidity", minHum:"Min Humidity", rain:"Rainfall" }
+                maxHum:"Max Humidity", minHum:"Min Humidity", rain:"Rainfall",
+                level:"Lake Level" }
   },
 
   // Accent colors per metric (must match the CSS variable values).
-  color:{ temp:"#ffb066", hum:"#5fc9d8", rain:"#93a6ef" },
+  color:{ temp:"#ffb066", hum:"#5fc9d8", rain:"#93a6ef", level:"#7fe0b0" },
+
+  // Display unit for Lake Level. Change to "in" or "m" if needed.
+  levelUnit: "ft",
 
   // Performance guard: only plot the most recent N rows of the live log
   // so a huge sheet doesn't bog the chart down.
@@ -412,6 +422,27 @@ function currentConditions(){
   };
 }
 
+/* A Lake Level reading is only "real" if it's a number greater than zero.
+   The lake sensor runs on its own 5-minute timer, so rows logged between
+   its updates can carry a false 0 (or a blank). We treat those as missing
+   everywhere, so they never show up as a current value or a chart spike. */
+function validLevel(v){ return !isNaN(v) && v > 0; }
+
+/* Current lake level = the most recent VALID reading in the live tab.
+   The live tab is newest-first (row 2 = newest), so we scan from the top
+   downward and return the first real number we find. Returns NaN if none. */
+function currentLakeLevel(){
+  const t = STATE.data.live;
+  if(!t || !t.rows.length) return NaN;
+  const iLevel = colIdx(t.cols, CONFIG.cols.live.level);
+  if(iLevel < 0) return NaN;                 // column not found in sheet
+  for(const row of t.rows){                  // top (newest) -> bottom (oldest)
+    const v = num(row[iLevel]);
+    if(validLevel(v)) return v;
+  }
+  return NaN;
+}
+
 /* ---------- 4a. RENDER: DASHBOARD --------------------------- */
 function renderDashboard(){
   const cc = currentConditions();
@@ -426,6 +457,9 @@ function renderDashboard(){
 
   const f1 = v => isNaN(v) ? "–" : v.toFixed(1);   // 1 decimal
   const f3 = v => isNaN(v) ? "–" : v.toFixed(3);   // rainfall
+  const f2 = v => isNaN(v) ? "–" : v.toFixed(2);   // lake level
+  const lvl = currentLakeLevel();                  // most recent valid reading
+  const LU  = CONFIG.levelUnit;                    // "ft"
 
   // small "tap to explore" hand icon
   const hint = `<div class="tap-hint">
@@ -466,6 +500,16 @@ function renderDashboard(){
         <div>Yesterday<b>${f3(cc.rainYest)} in</b></div>
       </div>
       ${hint}
+    </div>
+
+    <!-- LAKE LEVEL -->
+    <div class="card" data-go="level" style="--accent:var(--level)">
+      <div class="label"><span class="dot"></span>Lake Level</div>
+      <div class="big" style="color:var(--level)">${f2(lvl)}<span class="unit">${LU}</span></div>
+      <div class="sub">
+        <div>Latest reading<b>${f2(lvl)} ${LU}</b></div>
+      </div>
+      ${hint}
     </div>`;
 
   // Wire each card so a tap opens that metric's graph.
@@ -479,6 +523,8 @@ function renderReadouts(){
   const cc = currentConditions() || {};
   const f1 = v => isNaN(v) ? "–" : v.toFixed(1);
   const f3 = v => isNaN(v) ? "–" : v.toFixed(3);
+  const f2 = v => isNaN(v) ? "–" : v.toFixed(2);
+  const lvl = currentLakeLevel();
   const r = document.getElementById("readouts");
 
   // Each readout is highlighted when it matches the metric on screen, and
@@ -492,7 +538,8 @@ function renderReadouts(){
   r.innerHTML =
     item("temp","Temperature", f1(cc.curTemp),"°F", CONFIG.color.temp) +
     item("humidity","Humidity", f1(cc.curHum),"%",  CONFIG.color.hum) +
-    item("rain","Rainfall",     f3(cc.rain),"in",   CONFIG.color.rain);
+    item("rain","Rainfall",     f3(cc.rain),"in",   CONFIG.color.rain) +
+    item("level","Lake Level",  f2(lvl), CONFIG.levelUnit, CONFIG.color.level);
 
   // Wire taps: selecting a readout becomes the metric selector.
   r.querySelectorAll(".readout").forEach(card =>
@@ -513,9 +560,13 @@ function renderReadouts(){
                  (rainfall has only one column, so a single series) */
 function buildChartData(){
   const m = STATE.metric, src = STATE.source;
-  const accent = m==="temp"?CONFIG.color.temp : m==="humidity"?CONFIG.color.hum : CONFIG.color.rain;
-  const metricName = m==="temp"?"Temperature" : m==="humidity"?"Humidity" : "Rainfall";
-  const unit = m==="temp"?"°F" : m==="humidity"?"%" : "in";
+  // Per-metric display metadata. Lake level uses its configurable unit.
+  const accent = m==="temp"?CONFIG.color.temp : m==="humidity"?CONFIG.color.hum
+               : m==="rain"?CONFIG.color.rain : CONFIG.color.level;
+  const metricName = m==="temp"?"Temperature" : m==="humidity"?"Humidity"
+               : m==="rain"?"Rainfall" : "Lake Level";
+  const unit = m==="temp"?"°F" : m==="humidity"?"%"
+               : m==="rain"?"in" : CONFIG.levelUnit;
 
   // ---- LIVE: value plotted against time-of-day ----
   if(src==="live"){
@@ -523,7 +574,8 @@ function buildChartData(){
     if(!t) return {error:"Live data unavailable."};
     const c = CONFIG.cols.live;
     const iTime = colIdx(t.cols, c.time);
-    const iVal  = colIdx(t.cols, m==="temp"?c.temp : m==="humidity"?c.humidity : c.rain);
+    const iVal  = colIdx(t.cols, m==="temp"?c.temp : m==="humidity"?c.humidity
+                              : m==="rain"?c.rain : c.level);
 
     // The live tab is maintained NEWEST-FIRST (each new reading is inserted
     // at row 2), so the rows are already in reverse-chronological order.
@@ -533,11 +585,20 @@ function buildChartData(){
     const recent = t.rows.slice(0, CONFIG.liveMaxPoints);   // newest N (from top)
     const ordered = recent.slice().reverse();               // oldest -> newest
     const labels = ordered.map(row => text(row[iTime]));
-    const vals   = ordered.map(row => num(row[iVal]));
+
+    // Lake level runs on its own 5-min timer, so some rows hold a FALSE 0
+    // (or blank) between its updates. Map those to null so Chart.js draws a
+    // gap instead of a spike down to zero; spanGaps (set in lineSet) bridges
+    // the gap with a continuous line. Other metrics keep their raw values.
+    const vals = ordered.map(row => {
+      const v = num(row[iVal]);
+      if(m==="level") return validLevel(v) ? v : null;
+      return v;
+    });
 
     return {
       heading:`${metricName} · today`,
-      sub:`${vals.length} readings · live log vs time`,
+      sub:`${vals.filter(v=>v!=null).length} readings · live log vs time`,
       labels,
       datasets:[ lineSet(metricName+" ("+unit+")", vals, accent) ]
     };
@@ -569,6 +630,23 @@ function buildChartData(){
     };
   }
 
+  if(m==="level"){
+    // Lake level history is a single daily value (one line). Apply the same
+    // false-zero filter: 0/blank -> null so a missing day shows a gap rather
+    // than dropping the line to zero.
+    const iL = colIdx(t.cols, c.level);
+    const vals = rows.map(r => {
+      const v = num(r.row[iL]);
+      return validLevel(v) ? v : null;
+    });
+    return {
+      heading:"Lake Level · history",
+      sub:`${vals.filter(v=>v!=null).length} days · daily level vs date`,
+      labels,
+      datasets:[ lineSet(`Lake Level (${CONFIG.levelUnit})`, vals, accent) ]
+    };
+  }
+
   // Temperature / Humidity history: two lines (max + min).
   const maxName = m==="temp"?c.maxTemp:c.maxHum;
   const minName = m==="temp"?c.minTemp:c.minHum;
@@ -594,6 +672,7 @@ function lineSet(label, data, color){
     borderColor:color,
     backgroundColor:hexA(color,.12),
     fill:true, tension:.35,
+    spanGaps:true,      // bridge null points (e.g. filtered false-zero lake readings)
     borderWidth:2, pointRadius:0, pointHoverRadius:5,
     pointHoverBackgroundColor:color, pointHoverBorderColor:"#fff"
   };
