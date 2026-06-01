@@ -147,7 +147,9 @@ header.masthead{
 .readout{
   flex:1 1 160px;border:1px solid var(--line);border-radius:16px;background:var(--glass);
   backdrop-filter:blur(10px);padding:14px 16px;transition:.2s;
+  cursor:pointer;             /* these double as the metric selector */
 }
+.readout:hover{border-color:rgba(255,255,255,.28);transform:translateY(-2px)}
 .readout.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
 .readout .label{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim)}
 .readout .val{font-family:'Fraunces',serif;font-weight:300;font-size:30px;margin-top:4px;line-height:1}
@@ -224,16 +226,13 @@ header.masthead{
       Back to dashboard
     </button>
 
-    <!-- current-value strip -->
+    <!-- Current-value strip. These cards double as the METRIC SELECTOR:
+         tapping one switches the graph to that metric. (Replaces the old
+         separate Temperature/Humidity/Rainfall button row.) -->
     <div class="readouts" id="readouts"></div>
 
-    <!-- metric tabs + source toggle -->
+    <!-- Source toggle only: which dataset to plot. -->
     <div class="controls">
-      <div class="segrp" id="metricTabs">
-        <button class="seg" data-metric="temp">Temperature</button>
-        <button class="seg" data-metric="humidity">Humidity</button>
-        <button class="seg" data-metric="rain">Rainfall</button>
-      </div>
       <div class="segrp" id="sourceTabs">
         <button class="seg" data-source="live">Today · live</button>
         <button class="seg" data-source="history">History</button>
@@ -372,22 +371,6 @@ function dateOf(cell){
 
 const shortDate = d => d ? `${d.getMonth()+1}/${d.getDate()}` : "";
 
-// Turn the live tab's Timestamp cell into a sortable number (seconds since
-// midnight). Used to order the live log chronologically so the newest
-// reading ends up on the right of the chart. Handles either a real
-// date/time cell or a plain "6:14:36 PM" style string.
-function timeKey(cell){
-  const d = dateOf(cell);                       // real date/time? use its clock value
-  if(d) return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
-  const m = text(cell).trim().match(/(\d+):(\d+)(?::(\d+))?\s*(AM|PM)?/i);
-  if(!m) return 0;
-  let h = +m[1];
-  const min = +m[2], sec = +(m[3] || 0), ap = (m[4] || "").toUpperCase();
-  if(ap === "PM" && h < 12) h += 12;            // 1–11 PM -> 13–23
-  if(ap === "AM" && h === 12) h = 0;            // 12 AM  -> 0
-  return h*3600 + min*60 + sec;
-}
-
 /* ---------- STATE ------------------------------------------- */
 const STATE = {
   data:{ dashboard:null, live:null, history:null }, // cached tab data
@@ -498,9 +481,10 @@ function renderReadouts(){
   const f3 = v => isNaN(v) ? "–" : v.toFixed(3);
   const r = document.getElementById("readouts");
 
-  // Each readout is highlighted when it matches the metric on screen.
+  // Each readout is highlighted when it matches the metric on screen, and
+  // carries a data-metric tag so a tap can switch the graph to it.
   const item = (m, label, val, unit, color) => `
-    <div class="readout ${STATE.metric===m?"active":""}" style="--accent:${color}">
+    <div class="readout ${STATE.metric===m?"active":""}" data-metric="${m}" style="--accent:${color}">
       <div class="label">${label}</div>
       <div class="val" style="color:${color}">${val}<span class="unit">${unit}</span></div>
     </div>`;
@@ -509,6 +493,15 @@ function renderReadouts(){
     item("temp","Temperature", f1(cc.curTemp),"°F", CONFIG.color.temp) +
     item("humidity","Humidity", f1(cc.curHum),"%",  CONFIG.color.hum) +
     item("rain","Rainfall",     f3(cc.rain),"in",   CONFIG.color.rain);
+
+  // Wire taps: selecting a readout becomes the metric selector.
+  r.querySelectorAll(".readout").forEach(card =>
+    card.addEventListener("click", () => {
+      STATE.metric = card.dataset.metric;
+      renderReadouts();   // repaint to move the "active" highlight
+      drawChart();        // redraw graph for the new metric
+    })
+  );
 }
 
 /* ---------- 4c. RENDER: CHART ------------------------------- */
@@ -532,17 +525,15 @@ function buildChartData(){
     const iTime = colIdx(t.cols, c.time);
     const iVal  = colIdx(t.cols, m==="temp"?c.temp : m==="humidity"?c.humidity : c.rain);
 
-    // Build {label,val,key} triples, sort oldest->newest by time so the
-    // latest reading lands on the right, THEN keep the most recent N points.
-    let pts = t.rows.map(row => ({
-      label: text(row[iTime]),
-      val:   num(row[iVal]),
-      key:   timeKey(row[iTime])
-    }));
-    pts.sort((a, b) => a.key - b.key);          // chronological, left = oldest
-    pts = pts.slice(-CONFIG.liveMaxPoints);     // most recent N
-    const labels = pts.map(p => p.label);
-    const vals   = pts.map(p => p.val);
+    // The live tab is maintained NEWEST-FIRST (each new reading is inserted
+    // at row 2), so the rows are already in reverse-chronological order.
+    // Reversing them gives oldest->newest = left->right on the chart, which
+    // also sidesteps any midnight-rollover issue from the time-of-day-only
+    // timestamps. We take the most recent N (top N rows) BEFORE reversing.
+    const recent = t.rows.slice(0, CONFIG.liveMaxPoints);   // newest N (from top)
+    const ordered = recent.slice().reverse();               // oldest -> newest
+    const labels = ordered.map(row => text(row[iTime]));
+    const vals   = ordered.map(row => num(row[iVal]));
 
     return {
       heading:`${metricName} · today`,
@@ -690,22 +681,15 @@ function backToDashboard(){
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
-// Highlight the active metric tab and source toggle.
+// Highlight the active source toggle. (Metric highlighting now lives in
+// renderReadouts, since the readout cards are the metric selector.)
 function syncControls(){
-  document.querySelectorAll("#metricTabs .seg").forEach(b =>
-    b.classList.toggle("on", b.dataset.metric===STATE.metric));
   document.querySelectorAll("#sourceTabs .seg").forEach(b =>
     b.classList.toggle("on", b.dataset.source===STATE.source));
 }
 
 /* ---------- EVENT WIRING ----------------------------------- */
 document.getElementById("backBtn").addEventListener("click", backToDashboard);
-
-document.querySelectorAll("#metricTabs .seg").forEach(btn =>
-  btn.addEventListener("click", ()=>{
-    STATE.metric = btn.dataset.metric;
-    syncControls(); renderReadouts(); drawChart();
-  }));
 
 document.querySelectorAll("#sourceTabs .seg").forEach(btn =>
   btn.addEventListener("click", ()=>{
